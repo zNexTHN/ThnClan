@@ -7,6 +7,21 @@ src = {}
 Tunnel.bindInterface(GetCurrentResourceName(),src)
 
 
+local activeZones = {
+    ['Area 01'] = { 
+        coords = vector3(1440.15, 1108.33, 171.14), 
+        radius = 171.14, 
+        owner = nil, -- ID do clã dono (nil se neutro)
+        occupants = {}, -- Lista de players dentro { source = clanId }
+        capturing = false, -- Se está ocorrendo captura
+        mortos = {},
+        timer = 0,
+        attackerClan = nil,
+        type = nil -- "neutral" ou "hostile"
+    }
+}
+
+
 vRP.prepare("clan/get_user_clan", "SELECT m.clan_id, m.role_id, c.name, c.logo, c.description, c.announcement, c.territories FROM clan_members m JOIN clans c ON m.clan_id = c.id WHERE m.user_id = @user_id")
 vRP.prepare("clan/get_members", "SELECT m.user_id, m.role_id, r.name as role_name, m.joined_at FROM clan_members m JOIN clan_roles r ON m.role_id = r.id WHERE m.clan_id = @clan_id")
 vRP.prepare("clan/get_roles", "SELECT * FROM clan_roles WHERE clan_id = @clan_id AND name = @name")
@@ -22,7 +37,11 @@ vRP.prepare("clan/remove_member", "DELETE FROM clan_members WHERE user_id = @tar
 vRP.prepare("clan/update_member_role", "UPDATE clan_members SET role_id = @role_id WHERE user_id = @target_id AND clan_id = @clan_id")
 vRP.prepare("clan/createClan", 'INSERT INTO clans (name, logo, description, announcement) VALUES (@nome,@logo,@descricao,@anuncio)')
 vRP.prepare("clan/getClanId", 'SELECT id FROM clans WHERE name = @name')
+vRP.prepare("clan/getClanById", 'SELECT * FROM clans WHERE id = @clan_id')
 vRP.prepare('clan/createRole', 'INSERT INTO clan_roles (clan_id, name,color, permissions, is_leader) VALUES (@clan_id,@name,@color,@permissions,@is_leader)')
+
+
+
 
 
 local function hasClanPermission(user_id, perm_name)
@@ -110,7 +129,7 @@ local defaultDescricao = 'Seja bem-vindo, este é o seu clãn! Faça todas as al
 
 
 local function getClanId(nome)
-    local rows = vRP.query("clan/getClanId", { name = nome})
+    local rows = vRP.query("clan/getClanId", { name = nome })
     if #rows > 0 then
         return rows[1]
     end 
@@ -165,7 +184,6 @@ src.requestData = function()
     end
 end
 
--- Obter membros
 src.requestMembers = function()
     local source = source
     local user_id = vRP.getUserId(source)
@@ -284,6 +302,14 @@ src.kickMember = function(targetMemberId)
         end
 
         vRP.execute("clan/remove_member", { target_id = target_id, clan_id = clan_id })
+
+        for clanName,clanInfo in pairs(activeZones) do 
+            if clanInfo.capturing then
+                activeZones[clanName].occupants[source] = nil
+                activeZones[clanName].deadPlayers[source] = nil
+            end
+        end
+
         TriggerClientEvent("Notify", source, "sucesso", "Membro expulso.")
         return true
     else
@@ -326,19 +352,7 @@ src.invitePlayer = function()
 end
 
 
--- Adicione no início do server.lua
-local activeZones = {
-    ['Area 01'] = { 
-        coords = vector3(1440.15, 1108.33, 171.14), 
-        radius = 171.14, 
-        owner = nil, -- ID do clã dono (nil se neutro)
-        occupants = {}, -- Lista de players dentro { source = clanId }
-        capturing = false, -- Se está ocorrendo captura
-        timer = 0,
-        attackerClan = nil,
-        type = nil -- "neutral" ou "hostile"
-    }
-}
+
 
 vRP.prepare('vRP/get_all_territories','SELECT * FROM clan_territories')
 
@@ -361,9 +375,6 @@ RegisterNetEvent("clan:playerDiedInZone")
 AddEventHandler("clan:playerDiedInZone", function(zoneName)
     local source = source
     if activeZones[zoneName] then
-        if not activeZones[zoneName].deadPlayers then
-            activeZones[zoneName].deadPlayers = {}
-        end 
         activeZones[zoneName].deadPlayers[source] = true
         manageZoneLogic(zoneName, activeZones[zoneName])
     end
@@ -376,6 +387,16 @@ AddEventHandler("clan:updateZonePresence", function(zoneName, entered)
     if not user_id or not activeZones[zoneName] then return end
 
     local clanId, _ = getUserClanId(user_id)
+    if not activeZones[zoneName].deadPlayers then
+        activeZones[zoneName].deadPlayers = {}
+    end 
+
+    if activeZones[zoneName].capturing and entered then
+        if activeZones[zoneName].mortos[user_id] then
+            TriggerClientEvent('Notify', source, 'negado','Você não pode entrar nessa guerra de clã! Você já participou e morreu.')
+            return;
+        end
+    end
 
     if entered then
         activeZones[zoneName].occupants[source] = clanId or 0
@@ -391,7 +412,6 @@ end)
 CreateThread(function()
     while true do
         Citizen.Wait(1000)
-        
         if isWarTime() then
             for zoneName, zoneData in pairs(activeZones) do
                 manageZoneLogic(zoneName, zoneData)
@@ -406,6 +426,53 @@ CreateThread(function()
     end
 end)
 
+local sourceDropped = {}
+AddEventHandler('onPlayerDropped', function(reason,resourceName,clientDropReason)
+    local source = source 
+    local user_id = vRP.getUserId(source)
+    sourceDropped[source] = user_id
+end)
+
+local function getUserById(clan_id)
+    local rows = vRP.query("clan/getClanById", { clan_id = clan_id })
+    if #rows > 0 then
+        return rows[1]
+    end
+    return false
+end
+
+src.requestZones = function()
+    local user_id = vRP.getUserId(source)
+    if user_id then
+        local clan_id,clan_nome = getUserClanId(user_id)
+        if clan_id then
+            local zones = {}
+            
+            for nome,info in pairs(activeZones) do
+                if info.owner == clan_id then                    
+                    local attackerName = nil 
+                    if info.capturing then
+                        local clanInfo = getUserById(info.attackerClan)
+                        if clanInfo then
+                            attackerName = clanInfo.name
+                        end
+                    end
+                    
+    
+                    local dadosZone = {
+                        id = #zones + 1,
+                        name = nome,
+                        underAttack = info.capturing,
+                        attackerName = attackerName
+                    }
+                    table.insert(zones,dadosZone)
+                end
+            end
+            return zones
+        end
+    end
+end
+
 function manageZoneLogic(zoneName, zone)
     local clanCounts = {}
     local totalPlayers = 0
@@ -416,19 +483,40 @@ function manageZoneLogic(zoneName, zone)
         end
         totalPlayers = totalPlayers + 1
     end
+    
+    if zone.capturing then
+        for source,clanID in pairs(zone.occupants) do 
+            if GetEntityHealth(GetPlayerPed(source)) <= 101 then
+                local user_id = vRP.getUserId(source)
+                if user_id then
+                    activeZones[zoneName].mortos[user_id] = true
+                end
+                activeZones[zoneName].occupants[source] = nil
+                activeZones[zoneName].deadPlayers[source] = nil
+                TriggerClientEvent('Notify', source, 'verde','Você morreu, não está mais contabilizando na guerra!')
+            end
+            if sourceDropped[source] then
+                activeZones[zoneName].occupants[source] = nil
+                activeZones[zoneName].deadPlayers[source] = nil
+                SetTimeout(5000, function()
+                    sourceDropped[source] = nil
+                end)
+            end
+        end
+    end
+
+
     if not zone.owner then
         if not zone.capturing then
             for clanId, count in pairs(clanCounts) do
-                print(count,'Iniciando')
                 if count >= 1 then
                     startCapture(zoneName, clanId, "neutral")
-                    print('Iniciando captura')
                     break
                 end
             end
         else
             local attackerCount = clanCounts[zone.attackerClan] or 0
-            if attackerCount < 0 then
+            if attackerCount < 4 then
                 resetZone(zoneName, "Quantidade insuficiente de membros!")
             else
                 zone.timer = zone.timer - 1
@@ -450,7 +538,7 @@ function manageZoneLogic(zoneName, zone)
         else
             local attackers = clanCounts[zone.attackerClan] or 0
             local defenders = clanCounts[zone.owner] or 0
-            
+
             if attackers == 0 then
                 resetZone(zoneName, "Ataque repelido pelos defensores!")
                 return
@@ -466,27 +554,33 @@ function manageZoneLogic(zoneName, zone)
     end
 end
 
+local guerrasId = 0
+
 function startCapture(zoneName, attackerId, type)
     local zone = activeZones[zoneName]
     zone.capturing = true
     zone.attackerClan = attackerId
     zone.type = type
+    zone.id = guerrasId + 1
     
     if type == "neutral" then
         zone.timer = 60 -- Exemplo: 60s para neutro
         notifyZonePlayers(zoneName, "Captura iniciada por um Clã!")
     else
-        zone.timer = 200 
-        notifyClan(zone.owner, "SEU TERRITÓRIO " .. zoneName .. " ESTÁ SOB ATAQUE!")
+        zone.timer = 150 
+        notifyClan(zone.owner, "SEU TERRITÓRIO " ..zoneName:upper().." ESTÁ SOB ATAQUE!")
         notifyZonePlayers(zoneName, "Guerra iniciada! Defenda a zona.")
     end
 end
 
+
+vRP.prepare('vRP/update_territory_owner','UPDATE clan_territories SET clan_id = @clan_id WHERE zone_name = @zone_name')
+
 function finishCapture(zoneName, winnerId)
     local zone = activeZones[zoneName]
     zone.owner = winnerId
-    
-    vRP.execute("vRP/update_territory_owner", { zone = zoneName, clan_id = winnerId })
+
+    vRP.execute("vRP/update_territory_owner", { zone_name = zoneName, clan_id = winnerId })
     
     notifyZonePlayers(zoneName, "Território conquistado!")
     resetZone(zoneName)
@@ -501,19 +595,39 @@ function resetZone(zoneName, msg)
     zone.timer = 0
     zone.attackerClan = nil
     zone.type = nil
+    zone.mortos = nil 
     TriggerClientEvent("clan:hideWarHud", -1)
 end
 
 function notifyZonePlayers(zoneName, msg)
     for src, _ in pairs(activeZones[zoneName].occupants) do
-        print('AAAAAAA',msg,src,vRP.getUserId(src))
-        TriggerClientEvent("Notify", src, "sucesso", msg)
+        local user_id = vRP.getUserId(src)
+        if user_id then
+            local clan_id,clan_nome = getUserClanId(user_id)
+            if clan_id then
+                TriggerClientEvent("Notify", src, "sucesso", msg)
+            end
+        end
     end
 end
 
+local getUsersByClanId = function(clan_id)
+    local db_members = vRP.query("clan/get_members", { clan_id = clan_id })
+    local membersList = {}
+    if #db_members > 0 then
+        for _, m in pairs(db_members) do
+            local m_source = vRP.getUserSource(m.user_id)
+            if m_source then
+                table.insert(membersList, m_source)
+            end
+        end
+    end
+    return membersList
+end
+
 function notifyClan(clanId, msg)
-    -- local members = vRP.getUserByClanId(clanId) -- Você precisará de uma função que retorne sources pelo clanID
-    -- for _, src in pairs(members) do
-    --     TriggerClientEvent("Notify", src, "importante", msg)
-    -- end
+    local members = getUsersByClanId(clanId)
+    for _, src in pairs(members) do
+        TriggerClientEvent("Notify", src, "importante", msg)
+    end
 end

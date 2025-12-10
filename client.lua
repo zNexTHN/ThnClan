@@ -28,9 +28,6 @@ RegisterCommand('clan', function(source,args,rawCommand)
     end
 end)
 
-
-
-
 RegisterNUICallback('closeNui', function(data, cb)
     closeUI()
     cb('ok')
@@ -79,42 +76,19 @@ RegisterNUICallback('getRoles', function(data, cb)
     cb({ success = false, roles = {} })
 end)
 
+local areasDominacao = {
+    ['Area 01'] = { coords = vector3(1440.15, 1108.33, 171.14), radius = 171.14, dominada = false }
+}
 
 
-
-
-
--- Obter territórios
 RegisterNUICallback('getTerritories', function(data, cb)
-    local territories = {
-        {
-            id = "1",
-            name = "Grove Street",
-            underAttack = false,
-            attackerName = nil
-        },
-        {
-            id = "2",
-            name = "Vinewood Hills",
-            underAttack = true,
-            attackerName = "Ballas Gang"
-        },
-        {
-            id = "3",
-            name = "Del Perro Beach",
-            underAttack = false,
-            attackerName = nil
-        }
-    }
-    
-    cb({ success = true, territories = territories })
+    local territories = src.requestZones()
+    cb({ success = true, territories = territories or {} })
 end)
 
--- Ir até o território (definir GPS)
 RegisterNUICallback('goToTerritory', function(data, cb)
     local territoryId = data.territoryId
     
-    -- Coordenadas dos territórios (exemplo)
     local territoryCoords = {
         ["1"] = { x = 100.0, y = 200.0 },
         ["2"] = { x = 300.0, y = 400.0 },
@@ -130,12 +104,8 @@ RegisterNUICallback('goToTerritory', function(data, cb)
     end
 end)
 
--- Largar/abandonar território
 RegisterNUICallback('dropTerritory', function(data, cb)
     local territoryId = data.territoryId
-    
-    -- Sua lógica para abandonar território
-    -- TriggerServerEvent('clan:dropTerritory', territoryId)
     
     cb({ success = true, message = "Território abandonado!" })
 end)
@@ -199,19 +169,11 @@ end)
 
 
 
-local areasDominacao = {
-    -- Defina a coordenada como vector3 para o Blip ficar na altura correta (Z)
-    ['Area 01'] = { coords = vector3(1440.15, 1108.33, 171.14), radius = 171.14, dominada = false }
-}
-
-
-
--- Mantenha sua configuração de areasDominacao ou receba do server
 local inZone = false
 local currentZone = nil
 
 CreateThread(function()
-    for nome, info in pairs(areasDominacao) do 
+    for nome, info in pairs(activeZones) do 
         local zone = CircleZone:Create(info.coords, info.radius, {
             name = nome,
             debugPoly = false
@@ -219,15 +181,17 @@ CreateThread(function()
 
         zone:onPlayerInOut(function(isPointInside)
             if isPointInside then
-                inZone = true
-                currentZone = nome
-                TriggerServerEvent("clan:updateZonePresence", nome, true)
-                print("Entrou em " .. nome)
+                if GetEntityHealth(PlayerPedId()) > 101 then                    
+                    inZone = true
+                    currentZone = nome
+                    TriggerServerEvent("clan:updateZonePresence", nome, true)
+                    print("Entrou em " .. nome)
+                end
             else
                 inZone = false
                 currentZone = nil
                 TriggerServerEvent("clan:updateZonePresence", nome, false)
-                TriggerEvent("clan:hideWarHud") -- Limpa HUD se sair
+                TriggerEvent("clan:hideWarHud")
                 print("Saiu de " .. nome)
             end
         end)
@@ -235,10 +199,8 @@ CreateThread(function()
 end)
 
 
--- ... (Variáveis existentes)
-local isDeadInZone = false -- Variável de controle para não enviar o evento várias vezes
+local isDeadInZone = false
 
--- Adicione esta Thread para verificar a vida
 CreateThread(function()
     while true do
         local time = 1000
@@ -251,7 +213,7 @@ CreateThread(function()
                 isDeadInZone = true
                 TriggerServerEvent("clan:playerDiedInZone", currentZone)
                 TriggerEvent("Notify", "aviso", "Você foi abatido e não conta mais para a disputa!")
-            
+        
             -- elseif health > 101 and isDeadInZone then
             --    isDeadInZone = false
             --    TriggerServerEvent("clan:playerRevivedInZone", currentZone)
@@ -263,17 +225,35 @@ CreateThread(function()
     end
 end)
 
--- HUD de Guerra Simples
+local lastUpdated = nil 
+local text = ''
 RegisterNetEvent("clan:updateWarHud")
 AddEventHandler("clan:updateWarHud", function(zoneName, time, attackers, defenders)
     if currentZone == zoneName then
-        DrawText2D(0.5, 0.15, "~r~EM GUERRA: " .. time .. "s~n~Atacantes: " .. attackers .. " vs Defensores: " .. defenders)
+        text = "~r~EM GUERRA: " .. time .. "s~n~Atacantes: " .. attackers .. " vs Defensores: " .. defenders
+        if not lastUpdated then
+            lastUpdated = GetGameTimer()
+            Citizen.CreateThread(function()
+                while lastUpdated do 
+                    Citizen.Wait(5)
+                    if (GetGameTimer() - lastUpdated) > 3500 then 
+                        lastUpdated = nil 
+                        text = ''
+                        break;
+                    end
+                    DrawText2D(0.5, 0.15, text)
+                end 
+            end)
+        end
     end
 end)
 
+
+
+
 RegisterNetEvent("clan:hideWarHud")
 AddEventHandler("clan:hideWarHud", function()
-    -- Lógica para esconder UI
+
 end)
 
 function DrawText2D(x, y, text)
