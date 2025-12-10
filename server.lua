@@ -21,6 +21,57 @@ local activeZones = {
     }
 }
 
+local isSystemReady = promise.new()
+
+vRP.prepare('clan/createDatabaseClans', [[
+    CREATE TABLE IF NOT EXISTS `clans` (
+        `id` INT(11) NOT NULL AUTO_INCREMENT,
+        `name` VARCHAR(50) NOT NULL COLLATE 'utf8mb4_general_ci',
+        `logo` TEXT NULL DEFAULT NULL COLLATE 'utf8mb4_general_ci',
+        `description` TEXT NULL DEFAULT NULL COLLATE 'utf8mb4_general_ci',
+        `announcement` TEXT NULL DEFAULT NULL COLLATE 'utf8mb4_general_ci',
+        `territories` INT(11) NULL DEFAULT '0',
+        PRIMARY KEY (`id`) USING BTREE
+    ) COLLATE='utf8mb4_general_ci' ENGINE=InnoDB;
+]])
+
+vRP.prepare('clan/createDatabaseClanRoles', [[
+    CREATE TABLE IF NOT EXISTS `clan_roles` (
+        `id` INT(11) NOT NULL AUTO_INCREMENT,
+        `clan_id` INT(11) NOT NULL,
+        `name` VARCHAR(50) NOT NULL COLLATE 'utf8mb4_general_ci',
+        `color` VARCHAR(20) NULL DEFAULT '#64748b' COLLATE 'utf8mb4_general_ci',
+        `permissions` LONGTEXT NOT NULL COLLATE 'utf8mb4_general_ci',
+        `is_leader` TINYINT(1) NULL DEFAULT '0',
+        PRIMARY KEY (`id`) USING BTREE,
+        INDEX `fk_clan_roles_clan` (`clan_id`) USING BTREE,
+        CONSTRAINT `fk_clan_roles_ref_clan` FOREIGN KEY (`clan_id`) REFERENCES `clans` (`id`) ON UPDATE RESTRICT ON DELETE CASCADE,
+        CONSTRAINT `chk_role_permissions` CHECK (json_valid(`permissions`))
+    ) COLLATE='utf8mb4_general_ci' ENGINE=InnoDB;
+]])
+
+vRP.prepare('clan/createDatabaseClanMembers', [[
+    CREATE TABLE IF NOT EXISTS `clan_members` (
+        `user_id` INT(11) NOT NULL,
+        `clan_id` INT(11) NOT NULL,
+        `role_id` INT(11) NOT NULL,
+        `joined_at` TIMESTAMP NOT NULL DEFAULT current_timestamp(),
+        PRIMARY KEY (`user_id`) USING BTREE,
+        INDEX `fk_clan_members_clan` (`clan_id`) USING BTREE,
+        INDEX `fk_clan_members_role` (`role_id`) USING BTREE,
+        CONSTRAINT `fk_clan_members_ref_clan` FOREIGN KEY (`clan_id`) REFERENCES `clans` (`id`) ON UPDATE RESTRICT ON DELETE CASCADE,
+        CONSTRAINT `fk_clan_members_ref_role` FOREIGN KEY (`role_id`) REFERENCES `clan_roles` (`id`) ON UPDATE RESTRICT ON DELETE CASCADE
+    ) COLLATE='utf8mb4_general_ci' ENGINE=InnoDB;
+]])
+
+vRP.prepare('clan/createDatabaseClanTerritories', [[
+    CREATE TABLE IF NOT EXISTS `clan_territories` (
+        `zone_name` VARCHAR(50) NOT NULL COLLATE 'utf8mb4_general_ci',
+        `clan_id` INT(11) NULL DEFAULT NULL,
+        `updated_at` TIMESTAMP NOT NULL DEFAULT current_timestamp(),
+        PRIMARY KEY (`zone_name`) USING BTREE
+    ) COLLATE='utf8mb4_general_ci' ENGINE=InnoDB;
+]])
 
 vRP.prepare("clan/get_user_clan", "SELECT m.clan_id, m.role_id, c.name, c.logo, c.description, c.announcement, c.territories FROM clan_members m JOIN clans c ON m.clan_id = c.id WHERE m.user_id = @user_id")
 vRP.prepare("clan/get_members", "SELECT m.user_id, m.role_id, r.name as role_name, m.joined_at FROM clan_members m JOIN clan_roles r ON m.role_id = r.id WHERE m.clan_id = @clan_id")
@@ -28,7 +79,6 @@ vRP.prepare("clan/get_roles", "SELECT * FROM clan_roles WHERE clan_id = @clan_id
 vRP.prepare("clan/get_role", "SELECT * FROM clan_roles WHERE clan_id = @clan_id")
 vRP.prepare("clan/get_roleFromId", "SELECT * FROM clan_roles WHERE id = @role_id")
 vRP.prepare("clan/get_role_permissions", "SELECT permissions FROM clan_roles WHERE id = @role_id")
-
 vRP.prepare("clan/update_announcement", "UPDATE clans SET announcement = @announcement WHERE id = @clan_id")
 vRP.prepare("clan/update_settings", "UPDATE clans SET logo = @logo, description = @desc WHERE id = @clan_id")
 vRP.prepare("clan/update_role", "UPDATE clan_roles SET name = @name, color = @color, permissions = @permissions WHERE id = @role_id AND clan_id = @clan_id")
@@ -39,12 +89,63 @@ vRP.prepare("clan/createClan", 'INSERT INTO clans (name, logo, description, anno
 vRP.prepare("clan/getClanId", 'SELECT id FROM clans WHERE name = @name')
 vRP.prepare("clan/getClanById", 'SELECT * FROM clans WHERE id = @clan_id')
 vRP.prepare('clan/createRole', 'INSERT INTO clan_roles (clan_id, name,color, permissions, is_leader) VALUES (@clan_id,@name,@color,@permissions,@is_leader)')
+vRP.prepare('clan/get_all_territories','SELECT * FROM clan_territories')
+vRP.prepare('clan/createTerritories', 'INSERT INTO clan_territories (zone_name) VALUES (@zone_name)')
+vRP.prepare('clan/selectTerritory', 'SELECT * FROM clan_territories WHERE zone_name  = @zone_name')
 
 
+local function verifyTerritory(zone_name)
+    local rows = vRP.query('clan/selectTerritory', {zone_name = zone_name})
+    if #rows > 0 then
+        return true 
+    end
+    return false
+end
 
+CreateThread(function()
+    print("^3[CLAN SYSTEM] Iniciando verificação do banco de dados...^0")
+    
+    local createDatabases = {
+        'createDatabaseClans',
+        'createDatabaseClanRoles',
+        'createDatabaseClanMembers', 
+        'createDatabaseClanTerritories'
+    }
+
+    for _, queryName in ipairs(createDatabases) do 
+        vRP.execute('clan/'..queryName)
+        Citizen.Wait(200)
+    end
+    
+    Citizen.Wait(1000)
+
+    
+    for nomeArea,v in pairs(activeZones) do 
+        if not verifyTerritory(nomeArea) then
+            print('^2[CLAN SYSTEM] ^0O territorio ^2'..nomeArea..' ^0foi criado com sucesso!')
+            vRP.execute('clan/createTerritories', {zone_name = nomeArea})
+        end
+    end 
+
+    local rows = vRP.query("clan/get_all_territories", {})
+    if rows then
+        for _, row in pairs(rows) do
+            if activeZones and activeZones[row.zone_name] then
+                activeZones[row.zone_name].owner = row.clan_id
+            end
+        end
+    end
+    
+    local p = isSystemReady
+    if p and type(p) ~= 'boolean' then
+        p:resolve(true)
+    end
+    print("^2[CLAN SYSTEM] Banco de dados pronto! Sistema liberado.^0")
+end)
 
 
 local function hasClanPermission(user_id, perm_name)
+    Citizen.Await(isSystemReady)
     local rows = vRP.query("clan/get_user_clan", { user_id = user_id })
     if #rows > 0 then
         local role_id = rows[1].role_id
@@ -58,6 +159,7 @@ local function hasClanPermission(user_id, perm_name)
 end
 
 local function getUserClanId(user_id)
+    Citizen.Await(isSystemReady)
     local rows = vRP.query("clan/get_user_clan", { user_id = user_id })
     if #rows > 0 then return rows[1].clan_id,rows[1].name end
     return nil
@@ -351,19 +453,6 @@ src.invitePlayer = function()
     return false
 end
 
-
-
-
-vRP.prepare('vRP/get_all_territories','SELECT * FROM clan_territories')
-
-CreateThread(function()
-    local rows = vRP.query("vRP/get_all_territories", {})
-    for _, row in pairs(rows) do
-        if activeZones[row.zone_name] then
-            activeZones[row.zone_name].owner = row.clan_id
-        end
-    end
-end)
 
 local function isWarTime()
     local hours = os.date("*t").hour
