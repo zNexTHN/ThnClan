@@ -324,3 +324,196 @@ src.invitePlayer = function()
     end
     return false
 end
+
+
+-- Adicione no início do server.lua
+local activeZones = {
+    ['Area 01'] = { 
+        coords = vector3(1440.15, 1108.33, 171.14), 
+        radius = 171.14, 
+        owner = nil, -- ID do clã dono (nil se neutro)
+        occupants = {}, -- Lista de players dentro { source = clanId }
+        capturing = false, -- Se está ocorrendo captura
+        timer = 0,
+        attackerClan = nil,
+        type = nil -- "neutral" ou "hostile"
+    }
+}
+
+vRP.prepare('vRP/get_all_territories','SELECT * FROM clan_territories')
+
+CreateThread(function()
+    local rows = vRP.query("vRP/get_all_territories", {})
+    for _, row in pairs(rows) do
+        if activeZones[row.zone_name] then
+            activeZones[row.zone_name].owner = row.clan_id
+        end
+    end
+end)
+
+local function isWarTime()
+    local hours = os.date("*t").hour
+    return true
+end
+
+
+RegisterNetEvent("clan:playerDiedInZone")
+AddEventHandler("clan:playerDiedInZone", function(zoneName)
+    local source = source
+    if activeZones[zoneName] then
+        if not activeZones[zoneName].deadPlayers then
+            activeZones[zoneName].deadPlayers = {}
+        end 
+        activeZones[zoneName].deadPlayers[source] = true
+        manageZoneLogic(zoneName, activeZones[zoneName])
+    end
+end)
+
+RegisterNetEvent("clan:updateZonePresence")
+AddEventHandler("clan:updateZonePresence", function(zoneName, entered)
+    local source = source
+    local user_id = vRP.getUserId(source)
+    if not user_id or not activeZones[zoneName] then return end
+
+    local clanId, _ = getUserClanId(user_id)
+
+    if entered then
+        activeZones[zoneName].occupants[source] = clanId or 0
+        activeZones[zoneName].deadPlayers[source] = nil
+    else
+        activeZones[zoneName].occupants[source] = nil
+        activeZones[zoneName].deadPlayers[source] = nil
+    end
+    
+    TriggerClientEvent("clan:syncBlip", source, zoneName, activeZones[zoneName].owner)
+end)
+
+CreateThread(function()
+    while true do
+        Citizen.Wait(1000)
+        
+        if isWarTime() then
+            for zoneName, zoneData in pairs(activeZones) do
+                manageZoneLogic(zoneName, zoneData)
+            end
+        else
+            for zoneName, zoneData in pairs(activeZones) do
+                if zoneData.capturing then
+                    resetZone(zoneName)
+                end
+            end
+        end
+    end
+end)
+
+function manageZoneLogic(zoneName, zone)
+    local clanCounts = {}
+    local totalPlayers = 0
+    
+    for src, clanId in pairs(zone.occupants) do
+        if clanId ~= 0 then
+            clanCounts[clanId] = (clanCounts[clanId] or 0) + 1
+        end
+        totalPlayers = totalPlayers + 1
+    end
+    if not zone.owner then
+        if not zone.capturing then
+            for clanId, count in pairs(clanCounts) do
+                print(count,'Iniciando')
+                if count >= 1 then
+                    startCapture(zoneName, clanId, "neutral")
+                    print('Iniciando captura')
+                    break
+                end
+            end
+        else
+            local attackerCount = clanCounts[zone.attackerClan] or 0
+            if attackerCount < 0 then
+                resetZone(zoneName, "Quantidade insuficiente de membros!")
+            else
+                zone.timer = zone.timer - 1
+                if zone.timer <= 0 then
+                    finishCapture(zoneName, zone.attackerClan)
+                else
+                    notifyZonePlayers(zoneName, "Capturando: " .. zone.timer .. "s")
+                end
+            end
+        end
+    else
+        if not zone.capturing then
+            for clanId, count in pairs(clanCounts) do
+                if clanId ~= zone.owner and count > 0 then
+                    startCapture(zoneName, clanId, "hostile")
+                    break
+                end
+            end
+        else
+            local attackers = clanCounts[zone.attackerClan] or 0
+            local defenders = clanCounts[zone.owner] or 0
+            
+            if attackers == 0 then
+                resetZone(zoneName, "Ataque repelido pelos defensores!")
+                return
+            end
+
+            zone.timer = zone.timer - 1
+            if zone.timer <= 0 then
+                finishCapture(zoneName, zone.attackerClan)
+            else
+                 TriggerClientEvent("clan:updateWarHud", -1, zoneName, zone.timer, attackers, defenders)
+            end
+        end
+    end
+end
+
+function startCapture(zoneName, attackerId, type)
+    local zone = activeZones[zoneName]
+    zone.capturing = true
+    zone.attackerClan = attackerId
+    zone.type = type
+    
+    if type == "neutral" then
+        zone.timer = 60 -- Exemplo: 60s para neutro
+        notifyZonePlayers(zoneName, "Captura iniciada por um Clã!")
+    else
+        zone.timer = 200 
+        notifyClan(zone.owner, "SEU TERRITÓRIO " .. zoneName .. " ESTÁ SOB ATAQUE!")
+        notifyZonePlayers(zoneName, "Guerra iniciada! Defenda a zona.")
+    end
+end
+
+function finishCapture(zoneName, winnerId)
+    local zone = activeZones[zoneName]
+    zone.owner = winnerId
+    
+    vRP.execute("vRP/update_territory_owner", { zone = zoneName, clan_id = winnerId })
+    
+    notifyZonePlayers(zoneName, "Território conquistado!")
+    resetZone(zoneName)
+    
+    TriggerClientEvent("clan:syncBlipGlobal", -1, zoneName, winnerId)
+end
+
+function resetZone(zoneName, msg)
+    if msg then notifyZonePlayers(zoneName, msg) end
+    local zone = activeZones[zoneName]
+    zone.capturing = false
+    zone.timer = 0
+    zone.attackerClan = nil
+    zone.type = nil
+    TriggerClientEvent("clan:hideWarHud", -1)
+end
+
+function notifyZonePlayers(zoneName, msg)
+    for src, _ in pairs(activeZones[zoneName].occupants) do
+        print('AAAAAAA',msg,src,vRP.getUserId(src))
+        TriggerClientEvent("Notify", src, "sucesso", msg)
+    end
+end
+
+function notifyClan(clanId, msg)
+    -- local members = vRP.getUserByClanId(clanId) -- Você precisará de uma função que retorne sources pelo clanID
+    -- for _, src in pairs(members) do
+    --     TriggerClientEvent("Notify", src, "importante", msg)
+    -- end
+end

@@ -204,11 +204,14 @@ local areasDominacao = {
     ['Area 01'] = { coords = vector3(1440.15, 1108.33, 171.14), radius = 171.14, dominada = false }
 }
 
-local blipList = {}
+
+
+-- Mantenha sua configuração de areasDominacao ou receba do server
+local inZone = false
+local currentZone = nil
 
 CreateThread(function()
     for nome, info in pairs(areasDominacao) do 
-
         local zone = CircleZone:Create(info.coords, info.radius, {
             name = nome,
             debugPoly = false
@@ -216,26 +219,81 @@ CreateThread(function()
 
         zone:onPlayerInOut(function(isPointInside)
             if isPointInside then
-                -- Jogador ENTROU: Muda blip para Vermelho (Ocupado)
-                if DoesBlipExist(blipList[nome]) then
-                    SetBlipColour(blipList[nome], 1) 
-                end
-                print("Você ocupou a " .. nome)
+                inZone = true
+                currentZone = nome
+                TriggerServerEvent("clan:updateZonePresence", nome, true)
+                print("Entrou em " .. nome)
             else
-                -- Jogador SAIU: Muda blip para Verde (Disponível)
-                if DoesBlipExist(blipList[nome]) then
-                    SetBlipColour(blipList[nome], 2)
-                end
-                print("Você saiu da " .. nome)
+                inZone = false
+                currentZone = nil
+                TriggerServerEvent("clan:updateZonePresence", nome, false)
+                TriggerEvent("clan:hideWarHud") -- Limpa HUD se sair
+                print("Saiu de " .. nome)
             end
         end)
-        
-        print(nome .. ' configurada com Blip!')
     end
 end)
 
 
+-- ... (Variáveis existentes)
+local isDeadInZone = false -- Variável de controle para não enviar o evento várias vezes
+
+-- Adicione esta Thread para verificar a vida
+CreateThread(function()
+    while true do
+        local time = 1000
+        if inZone and currentZone then
+            time = 500
+            local ped = PlayerPedId()
+            local health = GetEntityHealth(ped)
+
+            if health <= 101 and not isDeadInZone then
+                isDeadInZone = true
+                TriggerServerEvent("clan:playerDiedInZone", currentZone)
+                TriggerEvent("Notify", "aviso", "Você foi abatido e não conta mais para a disputa!")
+            
+            -- elseif health > 101 and isDeadInZone then
+            --    isDeadInZone = false
+            --    TriggerServerEvent("clan:playerRevivedInZone", currentZone)
+            end
+        else
+            isDeadInZone = false
+        end
+        Citizen.Wait(time)
+    end
+end)
+
+-- HUD de Guerra Simples
+RegisterNetEvent("clan:updateWarHud")
+AddEventHandler("clan:updateWarHud", function(zoneName, time, attackers, defenders)
+    if currentZone == zoneName then
+        DrawText2D(0.5, 0.15, "~r~EM GUERRA: " .. time .. "s~n~Atacantes: " .. attackers .. " vs Defensores: " .. defenders)
+    end
+end)
+
+RegisterNetEvent("clan:hideWarHud")
+AddEventHandler("clan:hideWarHud", function()
+    -- Lógica para esconder UI
+end)
+
+function DrawText2D(x, y, text)
+    SetTextFont(4)
+    SetTextProportional(1)
+    SetTextScale(0.45, 0.45)
+    SetTextColour(255, 255, 255, 255)
+    SetTextDropShadow(0, 0, 0, 0, 255)
+    SetTextEdge(1, 0, 0, 0, 255)
+    SetTextDropShadow()
+    SetTextOutline()
+    SetTextEntry("STRING")
+    AddTextComponentString(text)
+    DrawText(x, y)
+end
+
+
 local mostrando = false 
+
+local blipList = {}
 RegisterCommand('territorios', function()
     if not mostrando then        
         for nome,info in pairs(areasDominacao) do 
