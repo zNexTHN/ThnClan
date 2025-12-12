@@ -7,19 +7,7 @@ src = {}
 Tunnel.bindInterface(GetCurrentResourceName(),src)
 
 
-local activeZones = {
-    ['Area 01'] = { 
-        coords = vector3(1440.15, 1108.33, 171.14), 
-        radius = 171.14, 
-        owner = nil, -- ID do clã dono (nil se neutro)
-        occupants = {}, -- Lista de players dentro { source = clanId }
-        capturing = false, -- Se está ocorrendo captura
-        mortos = {},
-        timer = 0,
-        attackerClan = nil,
-        type = nil -- "neutral" ou "hostile"
-    }
-}
+
 
 local isSystemReady = promise.new()
 
@@ -158,6 +146,29 @@ local function hasClanPermission(user_id, perm_name)
     return false
 end
 
+local function pushNotify(src, tipo, titulo, corpo, dur, opts)
+    local d = dur or ((tipo == 'importante' or tipo == 'negado') and 8000 or 6000)
+    TriggerClientEvent("Notify", src, tipo, titulo, d, corpo, opts)
+end
+
+local function buildWarNotify(zoneName, msg)
+    if msg == "Território conquistado!" then
+        return 'sucesso', 'Território Conquistado', 'A bandeira do clã agora tremula sobre '..zoneName..'.', {icon='flag', iconcolor='rgba(46, 204, 113, 1)', iconanimation='bounce'}
+    end
+    if string.find(msg, "Guerra iniciada!") then
+        return 'importante', 'Guerra Iniciada', 'Defenda '..zoneName..' com toda a força.', {icon='shield', iconcolor='rgba(52, 152, 219, 1)', iconanimation='pulse'}
+    end
+    if string.find(msg, "Captura iniciada") then
+        return 'importante', 'Captura Iniciada', 'Um clã iniciou uma captura em '..zoneName..'.', {icon='flag', iconcolor='rgba(241, 196, 15, 1)', iconanimation='pulse'}
+    end
+    if string.find(msg, "Quantidade insuficiente") then
+        return 'negado', 'Força Insuficiente', 'Reúna mais membros para dominar '..zoneName..'.', {icon='users', iconcolor='rgba(231, 76, 60, 1)', iconanimation='shake'}
+    end
+    if string.find(msg, "Ataque abandonado") then
+        return 'aviso', 'Ataque Abandonado', 'Sem presença, a dominação em '..zoneName..' foi cancelada.', {icon='hourglass', iconcolor='rgba(241, 196, 15, 1)', iconanimation='pulse'}
+    end
+    return 'importante', zoneName, msg, {icon='info', iconcolor='rgba(255,255,255,1)', iconanimation='pulse'}
+end
 local function getUserClanId(user_id)
     Citizen.Await(isSystemReady)
     local rows = vRP.query("clan/get_user_clan", { user_id = user_id })
@@ -179,44 +190,10 @@ end
 
 
 
-local roles = {
-    {
-        id = "1",
-        name = "Líder",
-        color = "#06b6d4",
-        permissions = {
-            manage_members = true,
-            manage_roles = true,
-            manage_clan = true,
-            invite = true,
-            kick = true
-        },
-        isLeader = true
-    },
-    {
-        id = "2",
-        name = "Vice-Líder",
-        color = "#8b5cf6",
-        permissions = {
-            manage_members = true,
-            manage_roles = false,
-            manage_clan = false,
-            invite = true,
-            kick = true
-        }
-    },
-    {
-        id = "3",
-        name = "Membro",
-        color = "#64748b",
-        permissions = {
-            manage_members = false,
-            manage_roles = false,
-            manage_clan = false,
-            invite = false,
-            kick = false
-        }
-    }
+local roles = (zonesConfig and zonesConfig.clanDefaults and zonesConfig.clanDefaults.roles) or {
+    { name = "Líder", color = "#06b6d4", permissions = { manage_members = true, manage_roles = true, manage_clan = true, invite = true, kick = true }, isLeader = true },
+    { name = "Vice-Líder", color = "#8b5cf6", permissions = { manage_members = true, manage_roles = false, manage_clan = false, invite = true, kick = true } },
+    { name = "Membro", color = "#64748b", permissions = { manage_members = false, manage_roles = false, manage_clan = false, invite = false, kick = false } }
 }
 
 local createRole = function(clan_id,name,color,permissions,lider)
@@ -227,8 +204,7 @@ local createRole = function(clan_id,name,color,permissions,lider)
 end
 
 
-local defaultDescricao = 'Seja bem-vindo, este é o seu clãn! Faça todas as alterações necessárias'
-
+local defaultDescricao = (zonesConfig and zonesConfig.clanDefaults and zonesConfig.clanDefaults.announcementDefault) or 'Seja bem-vindo, este é o seu clãn! Faça todas as alterações necessárias'
 
 local function getClanId(nome)
     local rows = vRP.query("clan/getClanId", { name = nome })
@@ -239,10 +215,11 @@ local function getClanId(nome)
 end
 
 src.createClan = function(data)
+    local source = source
     local user_id = vRP.getUserId(source)
-    if user_id then        
+    if user_id then
         if data.name and data.logo and data.description then
-            if not getClanId(data.name) then                
+            if not getClanId(data.name) then
                 vRP.execute("clan/createClan", { nome = data.name, logo = data.logo, descricao = data.description, anuncio = defaultDescricao })
                 Citizen.Wait(200)
                 local clanId = getClanId(data.name)
@@ -282,7 +259,7 @@ src.requestData = function()
         }
         return clanData
     else
-        TriggerClientEvent("Notify", source, "negado", "Você não pertence a um clã.")
+        pushNotify(source, 'negado', 'Sem Clã', 'Você não pertence a um clã.', nil, {icon='user-slash', iconcolor='rgba(231, 76, 60, 1)', iconanimation='shake'})
     end
 end
 
@@ -346,7 +323,7 @@ src.updateAnnouncement = function(text)
 
     if clan_id and hasClanPermission(user_id, "manage_clan") then 
         vRP.execute("clan/update_announcement", { announcement = text, clan_id = clan_id })
-        TriggerClientEvent("Notify", source, "sucesso", "Mural atualizado.")
+        pushNotify(source, 'sucesso', 'Mural Atualizado', 'As mensagens do clã foram atualizadas.', nil, {icon='scroll', iconcolor='rgba(46, 204, 113, 1)', iconanimation='bounce'})
         return true
     end
     return false
@@ -379,14 +356,14 @@ src.updateSettings =  function(logo, description, roles)
                 })
             else
                 createRole(clan_id,role.name,permJson,0)
-                TriggerClientEvent("Notify", source, "sucesso", "Novo grupo "..role.name..' criado!')
+                pushNotify(source, 'sucesso', 'Cargo Criado', 'O cargo '..role.name..' foi criado.', nil, {icon='id-badge', iconcolor='rgba(46, 204, 113, 1)', iconanimation='bounce'})
             end
         end
         
-        TriggerClientEvent("Notify", source, "sucesso", "Configurações salvas.")
+        pushNotify(source, 'sucesso', 'Configurações Salvas', 'As configurações do clã foram atualizadas.', nil, {icon='cog', iconcolor='rgba(46, 204, 113, 1)', iconanimation='bounce'})
         return true 
     else
-        TriggerClientEvent("Notify", source, "negado", "Sem permissão.")
+        pushNotify(source, 'negado', 'Acesso Negado', 'Você não possui permissões para esta ação.', nil, {icon='lock', iconcolor='rgba(231, 76, 60, 1)', iconanimation='shake'})
     end
 end
 
@@ -399,7 +376,7 @@ src.kickMember = function(targetMemberId)
 
     if clan_id and hasClanPermission(user_id, "kick") then
         if user_id == target_id then
-            TriggerClientEvent("Notify", source, "negado", "Você não pode se expulsar.")
+            pushNotify(source, 'negado', 'Ação Inválida', 'Você não pode se expulsar do próprio clã.', nil, {icon='ban', iconcolor='rgba(231, 76, 60, 1)', iconanimation='shake'})
             return
         end
 
@@ -412,10 +389,10 @@ src.kickMember = function(targetMemberId)
             end
         end
 
-        TriggerClientEvent("Notify", source, "sucesso", "Membro expulso.")
+        pushNotify(source, 'aviso', 'Expulsão Concluída', 'O membro foi removido do clã.', nil, {icon='user-minus', iconcolor='rgba(241, 196, 15, 1)', iconanimation='pulse'})
         return true
     else
-        TriggerClientEvent("Notify", source, "negado", "Sem permissão.")
+        pushNotify(source, 'negado', 'Acesso Negado', 'Você não possui permissões para esta ação.', nil, {icon='lock', iconcolor='rgba(231, 76, 60, 1)', iconanimation='shake'})
     end
 end
 
@@ -430,7 +407,7 @@ src.invitePlayer = function()
             local nuser_id = vRP.getUserId(nplayer)
             local target_clan = getUserClanId(nuser_id)
             if target_clan then
-                TriggerClientEvent("Notify", source, "negado", "Este jogador já tem um clã.")
+                pushNotify(source, 'negado', 'Convite Inválido', 'Este jogador já pertence a um clã.', nil, {icon='user-lock', iconcolor='rgba(231, 76, 60, 1)', iconanimation='shake'})
                 return false
             end
             SetTimeout(100, function()
@@ -439,10 +416,10 @@ src.invitePlayer = function()
                     local base_role = roles[#roles].id
         
                     vRP.execute("clan/add_member", { user_id = nuser_id, clan_id = clan_id, role_id = base_role })
-                    TriggerClientEvent("Notify", source, "sucesso", "Jogador recrutado!")
-                    TriggerClientEvent("Notify", nplayer, "sucesso", "Você entrou no clã!")
+                    pushNotify(source, 'sucesso', 'Recrutamento Concluído', 'O jogador foi adicionado ao clã.', nil, {icon='user-plus', iconcolor='rgba(46, 204, 113, 1)', iconanimation='bounce'})
+                    pushNotify(nplayer, 'sucesso', 'Bem-vindo ao Clã', 'Você agora faz parte do clã.', nil, {icon='hands', iconcolor='rgba(46, 204, 113, 1)', iconanimation='bounce'})
                 else
-                    TriggerClientEvent("Notify", source, "sucesso", "Jogador recusou o convite do clã!")
+                    pushNotify(source, 'aviso', 'Convite Recusado', 'O jogador recusou o convite do clã.', nil, {icon='hand', iconcolor='rgba(241, 196, 15, 1)', iconanimation='pulse'})
                 end
             end)
             local identity = vRP.getUserIdentity(nuser_id)
@@ -456,6 +433,10 @@ end
 
 local function isWarTime()
     local hours = os.date("*t").hour
+    local wt = zonesConfig and zonesConfig.settings and zonesConfig.settings.warTime
+    if wt and wt.enabled then
+        return hours >= wt.startHour and hours < wt.endHour
+    end
     return true
 end
 
@@ -481,7 +462,7 @@ AddEventHandler("clan:updateZonePresence", function(zoneName, entered)
     end 
 
     if activeZones[zoneName].capturing and entered then
-        if activeZones[zoneName].mortos[user_id] then
+        if activeZones[zoneName].mortos and activeZones[zoneName].mortos[user_id] then
             TriggerClientEvent('Notify', source, 'negado','Você não pode entrar nessa guerra de clã! Você já participou e morreu.')
             return;
         end
@@ -490,6 +471,15 @@ AddEventHandler("clan:updateZonePresence", function(zoneName, entered)
     if entered then
         activeZones[zoneName].occupants[source] = clanId or 0
         activeZones[zoneName].deadPlayers[source] = nil
+        if clanId and activeZones[zoneName].cooldownByClan then
+            local cd = activeZones[zoneName].cooldownByClan[clanId]
+            if cd and os.time() < cd then
+                local remaining = cd - os.time()
+                local m = math.floor(remaining / 60)
+                local s = remaining % 60
+                TriggerClientEvent('Notify', source, 'aviso', 'Cooldown ativo: '..string.format('%dm %ds', m, s))
+            end
+        end
     else
         activeZones[zoneName].occupants[source] = nil
         activeZones[zoneName].deadPlayers[source] = nil
@@ -562,6 +552,26 @@ src.requestZones = function()
     end
 end
 
+src.requestTerritoriesStatus = function()
+    local territories = {}
+    local user_id = vRP.getUserId(source)
+    local clan_id = nil
+    if user_id then
+        clan_id = select(1, getUserClanId(user_id))
+    end
+    for nome, info in pairs(activeZones) do
+        local cd = nil
+        if clan_id and info.cooldownByClan then
+            cd = info.cooldownByClan[clan_id]
+        end
+        table.insert(territories, {
+            name = nome,
+            owner = info.owner,
+            cooldownUntil = cd
+        })
+    end
+    return territories
+end
 function manageZoneLogic(zoneName, zone)
     local clanCounts = {}
     local totalPlayers = 0
@@ -574,8 +584,9 @@ function manageZoneLogic(zoneName, zone)
     end
     
     if zone.capturing then
-        for source,clanID in pairs(zone.occupants) do 
-            if GetEntityHealth(GetPlayerPed(source)) <= 101 then
+        for source,clanID in pairs(zone.occupants) do
+            local health = GetEntityHealth(GetPlayerPed(source))
+            if health <= 101 then
                 local user_id = vRP.getUserId(source)
                 if user_id then
                     activeZones[zoneName].mortos[user_id] = true
@@ -605,14 +616,16 @@ function manageZoneLogic(zoneName, zone)
             end
         else
             local attackerCount = clanCounts[zone.attackerClan] or 0
-            if attackerCount < 4 then
+            local minAtt = ((zonesConfig and zonesConfig.settings and zonesConfig.settings.minAttackersNeutral) or 4)
+            if (zonesConfig and zonesConfig.settings and zonesConfig.settings.debug) then minAtt = 0 end
+            if attackerCount == 0 then
+                resetZone(zoneName, "Ataque abandonado!")
+            elseif attackerCount < minAtt then
                 resetZone(zoneName, "Quantidade insuficiente de membros!")
             else
                 zone.timer = zone.timer - 1
                 if zone.timer <= 0 then
                     finishCapture(zoneName, zone.attackerClan)
-                else
-                    notifyZonePlayers(zoneName, "Capturando: " .. zone.timer .. "s")
                 end
             end
         end
@@ -637,30 +650,87 @@ function manageZoneLogic(zoneName, zone)
             if zone.timer <= 0 then
                 finishCapture(zoneName, zone.attackerClan)
             else
-                 TriggerClientEvent("clan:updateWarHud", -1, zoneName, zone.timer, attackers, defenders)
+                TriggerClientEvent("clan:updateWarHud", -1, zoneName, zone.timer, attackers, defenders)
             end
         end
     end
 end
-
 local guerrasId = 0
 
 function startCapture(zoneName, attackerId, type)
     local zone = activeZones[zoneName]
+    local now = os.time()
+    local cdMin = (zonesConfig and zonesConfig.settings and zonesConfig.settings.cooldownMinutes) or 30
+    if zone.cooldownByClan and zone.cooldownByClan[attackerId] and now < zone.cooldownByClan[attackerId] then
+        return
+    end
     zone.capturing = true
     zone.attackerClan = attackerId
     zone.type = type
     zone.id = guerrasId + 1
     
     if type == "neutral" then
-        zone.timer = 60 -- Exemplo: 60s para neutro
+        local tNeutral = ((zonesConfig and zonesConfig.settings and zonesConfig.settings.neutralCaptureTime) or 60)
+        if (zonesConfig and zonesConfig.settings and zonesConfig.settings.debug) then tNeutral = 10 end
+        zone.timer = tNeutral
         notifyZonePlayers(zoneName, "Captura iniciada por um Clã!")
+        notifyZonePlayers(zoneName, "Capturando", zone.timer*1000, true)
     else
-        zone.timer = 150 
+        local tHostile = ((zonesConfig and zonesConfig.settings and zonesConfig.settings.hostileCaptureTime) or 150)
+        if (zonesConfig and zonesConfig.settings and zonesConfig.settings.debug) then tHostile = 15 end
+        zone.timer = tHostile
         notifyClan(zone.owner, "SEU TERRITÓRIO " ..zoneName:upper().." ESTÁ SOB ATAQUE!")
         notifyZonePlayers(zoneName, "Guerra iniciada! Defenda a zona.")
     end
 end
+
+RegisterCommand('clan_reset_cooldown', function(source, args, raw)
+    local isDebug = (zonesConfig and zonesConfig.settings and zonesConfig.settings.debug)
+    if not isDebug then
+    pushNotify(source, 'negado', 'Modo Debug Desativado', 'Ative o debug no config para usar este comando.', nil, {icon='bug', iconcolor='rgba(231, 76, 60, 1)', iconanimation='shake'})
+        return
+    end
+    local target = args and args[1]
+    local user_id = vRP.getUserId(source)
+    local myClanId = nil
+    if user_id then myClanId = select(1, getUserClanId(user_id)) end
+
+    if target == 'all' or target == 'ALL' then
+        for nome, info in pairs(activeZones) do
+            info.cooldownByClan = {}
+        end
+        pushNotify(source, 'sucesso', 'Cooldown Resetado', 'Todos os cooldowns de todos os clãs foram resetados.', nil, {icon='clock', iconcolor='rgba(46, 204, 113, 1)', iconanimation='bounce'})
+        return
+    end
+
+    local numClan = tonumber(target)
+    if numClan then
+        for nome, info in pairs(activeZones) do
+            if info.cooldownByClan then
+                info.cooldownByClan[numClan] = nil
+            end
+        end
+        pushNotify(source, 'sucesso', 'Cooldown Resetado', 'Cooldown do clã #'..numClan..' resetado em todos os territórios.', nil, {icon='clock', iconcolor='rgba(46, 204, 113, 1)', iconanimation='bounce'})
+        return
+    end
+
+    if target and activeZones[target] then
+        local zone = activeZones[target]
+        if zone.cooldownByClan and myClanId then
+            zone.cooldownByClan[myClanId] = nil
+            pushNotify(source, 'sucesso', 'Cooldown Resetado', 'Cooldown do seu clã em '..target..' foi resetado.', nil, {icon='clock', iconcolor='rgba(46, 204, 113, 1)', iconanimation='bounce'})
+            return
+        end
+    end
+    if myClanId then
+        for nome, info in pairs(activeZones) do
+            if info.cooldownByClan then info.cooldownByClan[myClanId] = nil end
+        end
+        pushNotify(source, 'sucesso', 'Cooldown Resetado', 'Cooldown do seu clã resetado em todos os territórios.', nil, {icon='clock', iconcolor='rgba(46, 204, 113, 1)', iconanimation='bounce'})
+        return
+    end
+    pushNotify(source, 'aviso', 'Uso do Comando', "Informe 'all', um ID de clã, ou o nome exato da área.", nil, {icon='keyboard', iconcolor='rgba(241, 196, 15, 1)', iconanimation='pulse'})
+end)
 
 
 vRP.prepare('vRP/update_territory_owner','UPDATE clan_territories SET clan_id = @clan_id WHERE zone_name = @zone_name')
@@ -673,6 +743,9 @@ function finishCapture(zoneName, winnerId)
     
     notifyZonePlayers(zoneName, "Território conquistado!")
     resetZone(zoneName)
+    local cdMin = (zonesConfig and zonesConfig.settings and zonesConfig.settings.cooldownMinutes) or 30
+    zone.cooldownByClan = zone.cooldownByClan or {}
+    zone.cooldownByClan[winnerId] = os.time() + (cdMin * 60)
     
     TriggerClientEvent("clan:syncBlipGlobal", -1, zoneName, winnerId)
 end
@@ -682,19 +755,30 @@ function resetZone(zoneName, msg)
     local zone = activeZones[zoneName]
     zone.capturing = false
     zone.timer = 0
+    local attackerId = zone.attackerClan
     zone.attackerClan = nil
     zone.type = nil
-    zone.mortos = nil 
+    zone.mortos = {} 
+    local cdMin = (zonesConfig and zonesConfig.settings and zonesConfig.settings.cooldownMinutes) or 30
+    if attackerId then
+        zone.cooldownByClan = zone.cooldownByClan or {}
+        zone.cooldownByClan[attackerId] = os.time() + (cdMin * 60)
+    end
     TriggerClientEvent("clan:hideWarHud", -1)
 end
 
-function notifyZonePlayers(zoneName, msg)
+function notifyZonePlayers(zoneName, msg, time, isProgress)
     for src, _ in pairs(activeZones[zoneName].occupants) do
         local user_id = vRP.getUserId(src)
         if user_id then
             local clan_id,clan_nome = getUserClanId(user_id)
             if clan_id then
-                TriggerClientEvent("Notify", src, "sucesso", msg)
+                if not isProgress then
+                    local tipo, titulo, corpo, opts = buildWarNotify(zoneName, msg)
+                    pushNotify(src, tipo, titulo, corpo, nil, opts)
+                else
+                    TriggerClientEvent("Progress", src, time, msg)
+                end
             end
         end
     end
@@ -717,6 +801,6 @@ end
 function notifyClan(clanId, msg)
     local members = getUsersByClanId(clanId)
     for _, src in pairs(members) do
-        TriggerClientEvent("Notify", src, "importante", msg)
+        pushNotify(src, 'importante', 'Território Sob Ataque', msg, nil, {icon='shield', iconcolor='rgba(52, 152, 219, 1)', iconanimation='pulse'})
     end
 end

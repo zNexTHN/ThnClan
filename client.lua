@@ -4,9 +4,6 @@ vRP = Proxy.getInterface("vRP")
 src = Tunnel.getInterface(GetCurrentResourceName(),src)
 local isNuiOpen = false
 
-local isNuiOpen = false
-
-
 local clanData = nil
 
 local function closeUI()
@@ -75,11 +72,6 @@ RegisterNUICallback('getRoles', function(data, cb)
     
     cb({ success = false, roles = {} })
 end)
-
-local areasDominacao = {
-    ['Area 01'] = { coords = vector3(1440.15, 1108.33, 171.14), radius = 171.14, dominada = false }
-}
-
 
 RegisterNUICallback('getTerritories', function(data, cb)
     local territories = src.requestZones()
@@ -176,12 +168,12 @@ CreateThread(function()
     for nome, info in pairs(activeZones) do 
         local zone = CircleZone:Create(info.coords, info.radius, {
             name = nome,
-            debugPoly = false
+            debugPoly = zonesConfig.settings.debug
         })
 
         zone:onPlayerInOut(function(isPointInside)
             if isPointInside then
-                if GetEntityHealth(PlayerPedId()) > 101 then                    
+                if GetEntityHealth(PlayerPedId()) > 101 then             
                     inZone = true
                     currentZone = nome
                     TriggerServerEvent("clan:updateZonePresence", nome, true)
@@ -212,7 +204,7 @@ CreateThread(function()
             if health <= 101 and not isDeadInZone then
                 isDeadInZone = true
                 TriggerServerEvent("clan:playerDiedInZone", currentZone)
-                TriggerEvent("Notify", "aviso", "Você foi abatido e não conta mais para a disputa!")
+                TriggerEvent("Notify", "aviso", "Abatido em Batalha", 8000, "Você não conta mais para a disputa nesta guerra.", {icon='skull', iconcolor='rgba(231, 76, 60, 1)', iconanimation='shake'})
         
             -- elseif health > 101 and isDeadInZone then
             --    isDeadInZone = false
@@ -248,9 +240,6 @@ AddEventHandler("clan:updateWarHud", function(zoneName, time, attackers, defende
     end
 end)
 
-
-
-
 RegisterNetEvent("clan:hideWarHud")
 AddEventHandler("clan:hideWarHud", function()
 
@@ -270,23 +259,49 @@ function DrawText2D(x, y, text)
     DrawText(x, y)
 end
 
-
-local mostrando = false 
+local mostrando = false
 
 local blipList = {}
+local zoneOwners = {}
+
+RegisterNetEvent('clan:syncBlip')
+AddEventHandler('clan:syncBlip', function(zoneName, owner)
+    zoneOwners[zoneName] = owner
+    if blipList[zoneName] then
+        local neutralColour = (zonesConfig and zonesConfig.mapBlips and zonesConfig.mapBlips.neutralColour) or 2
+        local dominatedColour = (zonesConfig and zonesConfig.mapBlips and zonesConfig.mapBlips.dominatedColour) or 1
+        SetBlipColour(blipList[zoneName], owner and dominatedColour or neutralColour)
+    end
+end)
+
+RegisterNetEvent('clan:syncBlipGlobal')
+AddEventHandler('clan:syncBlipGlobal', function(zoneName, owner)
+    zoneOwners[zoneName] = owner
+    if blipList[zoneName] then
+        local neutralColour = (zonesConfig and zonesConfig.mapBlips and zonesConfig.mapBlips.neutralColour) or 2
+        local dominatedColour = (zonesConfig and zonesConfig.mapBlips and zonesConfig.mapBlips.dominatedColour) or 1
+        SetBlipColour(blipList[zoneName], owner and dominatedColour or neutralColour)
+    end
+end)
 RegisterCommand('territorios', function()
-    if not mostrando then        
-        for nome,info in pairs(areasDominacao) do 
+    if not mostrando then
+        local territories = src.requestTerritoriesStatus() or {}
+        print(json.encode(territories,{indent=true}))
+        zoneOwners = {}
+        for _, t in pairs(territories) do
+            zoneOwners[t.name] = t.owner
+        end
+
+        for nome,info in pairs(activeZones) do
             blipList[nome] = AddBlipForCoord(info.coords.x, info.coords.y, info.coords.z)
             
-            SetBlipSprite(blipList[nome], 161)
-            SetBlipScale(blipList[nome], 1.2)
+            SetBlipSprite(blipList[nome], (zonesConfig and zonesConfig.mapBlips and zonesConfig.mapBlips.sprite) or 161)
+            SetBlipScale(blipList[nome], (zonesConfig and zonesConfig.mapBlips and zonesConfig.mapBlips.scale) or 1.2)
 
-            if info.dominada then
-                SetBlipColour(blipList[nome], 1) 
-            else 
-                SetBlipColour(blipList[nome], 2) 
-            end
+            local owner = zoneOwners[nome]
+            local neutralColour = (zonesConfig and zonesConfig.mapBlips and zonesConfig.mapBlips.neutralColour) or 2
+            local dominatedColour = (zonesConfig and zonesConfig.mapBlips and zonesConfig.mapBlips.dominatedColour) or 1
+            SetBlipColour(blipList[nome], owner and dominatedColour or neutralColour)
             SetBlipAsShortRange(blipList[nome], true)
             
             BeginTextCommandSetBlipName("STRING")
@@ -294,9 +309,9 @@ RegisterCommand('territorios', function()
             EndTextCommandSetBlipName(blipList[nome])
             mostrando = true 
 
-            SetTimeout(25000, function()
+            SetTimeout(((zonesConfig and zonesConfig.mapBlips and zonesConfig.mapBlips.showDurationMs) or 25000), function()
                 RemoveBlip(blipList[nome])
-                TriggerEvent('Notify', 'aviso','Territórios sendo ocultos no mapa')
+                TriggerEvent('Notify', 'aviso','Mapa Atualizado', 6000, 'Os territórios foram ocultos do mapa temporariamente.', {icon='map', iconcolor='rgba(241, 196, 15, 1)', iconanimation='pulse'})
                 mostrando = false
             end)
         end
